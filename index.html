@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Elephant Alert - Live Drive Mode with Moving Red Dot</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+
+  <style>
+    body, html {
+      margin: 0; padding: 0; height: 100%; font-family: Arial, sans-serif;
+    }
+    #map {
+      height: 80vh;
+      width: 100%;
+      margin-bottom: 10px;
+    }
+    #controls {
+      padding: 10px;
+      background: #f0f0f0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      justify-content: center;
+    }
+    label {
+      font-weight: bold;
+      margin-right: 5px;
+    }
+    input {
+      padding: 5px;
+      font-size: 14px;
+      width: 200px;
+    }
+    button {
+      padding: 8px 15px;
+      font-size: 16px;
+      cursor: pointer;
+      border: none;
+      border-radius: 5px;
+      background-color: crimson;
+      color: white;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+      transition: background-color 0.3s ease;
+    }
+    button:disabled {
+      background-color: #aa0000;
+      cursor: not-allowed;
+    }
+    #status {
+      margin-top: 10px;
+      font-weight: bold;
+      color: #333;
+      text-align: center;
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="controls">
+    <label>Start Location (Your Location):</label>
+    <input type="text" id="start-location" readonly />
+    <label>Destination (Click on map):</label>
+    <input type="text" id="destination-location" placeholder="Click map to select destination" readonly />
+    <button id="start-drive-btn" disabled>Start Drive</button>
+    <button id="stop-drive-btn" disabled>Stop Drive</button>
+    <button id="manual-elephant-btn">Add Elephant Manually</button>
+  </div>
+
+  <div id="map"></div>
+  <div id="status"></div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js";
+    import {
+      getDatabase,
+      ref,
+      onValue,
+      push
+    } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBPM55I08UVYhUm8XwETLlukc0btlKLE6Q",
+      authDomain: "elephant-alert-68626.firebaseapp.com",
+      databaseURL: "https://elephant-alert-68626-default-rtdb.firebaseio.com",
+      projectId: "elephant-alert-68626",
+      storageBucket: "elephant-alert-68626.firebasestorage.app",
+      messagingSenderId: "669608211278",
+      appId: "1:669608211278:web:11882bbe5bc29910e5641f",
+      measurementId: "G-WFZGXHZHHP",
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    const southWest = L.latLng(5.8371, 79.6506);
+    const northEast = L.latLng(10.0919, 81.8807);
+    const sriLankaBounds = L.latLngBounds(southWest, northEast);
+
+    const map = L.map("map", {
+      maxBounds: sriLankaBounds,
+      maxBoundsViscosity: 1.0,
+      minZoom: 7,
+      maxZoom: 15,
+      attributionControl: false,
+    }).setView([7.8731, 80.7718], 8);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+    }).addTo(map);
+
+    const startInput = document.getElementById("start-location");
+    const destInput = document.getElementById("destination-location");
+    const startDriveBtn = document.getElementById("start-drive-btn");
+    const stopDriveBtn = document.getElementById("stop-drive-btn");
+    const manualElephantBtn = document.getElementById("manual-elephant-btn");
+    const statusDiv = document.getElementById("status");
+
+    const elephantIcon = L.divIcon({
+      html: `<div style="
+        background-color: red; 
+        color: white; 
+        font-size: 24px; 
+        width: 40px; 
+        height: 40px; 
+        text-align: center; 
+        border-radius: 50%; 
+        line-height: 40px;
+        box-shadow: 0 0 5px rgba(0,0,0,0.5);
+      ">🐘</div>`,
+      className: "",
+      iconSize: [40, 40],
+      iconAnchor: [20, 40],
+      popupAnchor: [0, -40],
+    });
+
+    const driverIcon = L.divIcon({
+      html: `<div style="
+        background-color: crimson;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 2px solid white;
+        box-shadow: 0 0 10px crimson;
+      "></div>`,
+      className: "",
+      iconSize: [18, 18],
+      iconAnchor: [9, 9],
+    });
+
+    function isInsideSriLanka(lat, lng) {
+      return sriLankaBounds.contains([lat, lng]);
+    }
+
+    function deg2rad(deg) {
+      return deg * (Math.PI / 180);
+    }
+
+    function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
+      const R = 6371; 
+      const dLat = deg2rad(lat2 - lat1);
+      const dLon = deg2rad(lon2 - lon1);
+      const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
+
+    let elephantMarkers = [];
+    let driverMarker = null;
+    let watchId = null;
+    let destMarker = null;
+    let destination = null;
+
+    let manualAddMode = false;
+
+    onValue(ref(db, "elephants"), (snapshot) => {
+      elephantMarkers.forEach(({ marker }) => {
+        map.removeLayer(marker);
+      });
+      elephantMarkers = [];
+
+      const data = snapshot.val();
+      if (data) {
+        Object.values(data).forEach(elephant => {
+          if (isInsideSriLanka(elephant.latitude, elephant.longitude)) {
+            const marker = L.marker([elephant.latitude, elephant.longitude], { icon: elephantIcon }).addTo(map);
+            marker.bindPopup("🐘 Elephant reported here");
+            elephantMarkers.push({ data: elephant, marker });
+          }
+        });
+      }
+    });
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(pos => {
+        const { latitude, longitude } = pos.coords;
+        if (isInsideSriLanka(latitude, longitude)) {
+          startInput.value = `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+          map.setView([latitude, longitude], 13);
+        } else {
+          statusDiv.textContent = "Your location is outside Sri Lanka bounds.";
+        }
+      }, () => {
+        statusDiv.textContent = "Could not get your location.";
+      });
+    } else {
+      statusDiv.textContent = "Geolocation not supported.";
+    }
+
+    map.on("click", (e) => {
+      if (driverMarker || manualAddMode) return;
+
+      const { lat, lng } = e.latlng;
+      if (!isInsideSriLanka(lat, lng)) {
+        alert("Destination must be inside Sri Lanka.");
+        return;
+      }
+
+      destination = { lat, lng };
+      destInput.value = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+
+      if (destMarker) {
+        destMarker.setLatLng([lat, lng]);
+      } else {
+        destMarker = L.marker([lat, lng]).addTo(map);
+      }
+
+      startDriveBtn.disabled = false;
+      statusDiv.textContent = "Destination selected. Click Start Drive.";
+    });
+
+    startDriveBtn.addEventListener("click", () => {
+      if (!startInput.value) {
+        alert("Start location not set.");
+        return;
+      }
+      if (!destination) {
+        alert("Please select destination on map.");
+        return;
+      }
+
+      startDriveBtn.disabled = true;
+      manualElephantBtn.disabled = true;
+      destInput.disabled = true;
+      statusDiv.textContent = "Drive mode ON. Tracking your location...";
+
+      if (!navigator.geolocation) {
+        alert("Geolocation not supported.");
+        return;
+      }
+
+      watchId = navigator.geolocation.watchPosition(position => {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+
+        if (!isInsideSriLanka(lat, lng)) {
+          statusDiv.textContent = "You are outside Sri Lanka bounds.";
+          return;
+        }
+
+        if (!driverMarker) {
+          driverMarker = L.marker([lat, lng], { icon: driverIcon }).addTo(map);
+        } else {
+          driverMarker.setLatLng([lat, lng]);
+        }
+
+        // Pan map smoothly to driver location:
+        map.panTo([lat, lng]);
+
+        // Elephant alerts inside 5 km radius
+        elephantMarkers.forEach(({ data, marker }) => {
+          const dist = getDistanceFromLatLonInKm(lat, lng, data.latitude, data.longitude);
+          if (dist <= 5) {
+            marker.openPopup();
+          } else {
+            marker.closePopup();
+          }
+        });
+
+      }, error => {
+        statusDiv.textContent = `Error getting location: ${error.message}`;
+      }, {
+        enableHighAccuracy: true,
+        maximumAge: 10000,
+        timeout: 10000,
+      });
+
+      stopDriveBtn.disabled = false;
+    });
+
+    stopDriveBtn.addEventListener("click", () => {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      if (driverMarker) {
+        map.removeLayer(driverMarker);
+        driverMarker = null;
+      }
+      statusDiv.textContent = "Drive mode stopped.";
+      startDriveBtn.disabled = false;
+      stopDriveBtn.disabled = true;
+      manualElephantBtn.disabled = false;
+      destInput.disabled = false;
+    });
+
+    manualElephantBtn.addEventListener("click", () => {
+      manualAddMode = !manualAddMode;
+
+      if (manualAddMode) {
+        manualElephantBtn.textContent = "Click map to add elephant. Click to cancel.";
+        statusDiv.textContent = "Manual Elephant Add mode: Click anywhere on map to add elephant.";
+        startDriveBtn.disabled = true;
+        stopDriveBtn.disabled = true;
+        destInput.disabled = true;
+      } else {
+        manualElephantBtn.textContent = "Add Elephant Manually";
+        statusDiv.textContent = "";
+        startDriveBtn.disabled = destination ? false : true;
+        destInput.disabled = false;
+      }
+    });
+
+    map.on("click", e => {
+      if (!manualAddMode) return;
+
+      const { lat, lng } = e.latlng;
+      if (!isInsideSriLanka(lat, lng)) {
+        alert("Elephant must be inside Sri Lanka.");
+        return;
+      }
+
+      push(ref(db, "elephants"), {
+        latitude: lat,
+        longitude: lng,
+        timestamp: Date.now()
+      });
+
+      alert(`Elephant manually added at ${lat.toFixed(6)}, ${lng.toFixed(6)}.`);
+
+      manualAddMode = false;
+      manualElephantBtn.textContent = "Add Elephant Manually";
+      statusDiv.textContent = "";
+      startDriveBtn.disabled = destination ? false : true;
+      destInput.disabled = false;
+    });
+
+  </script>
+
+</body>
+</html>
