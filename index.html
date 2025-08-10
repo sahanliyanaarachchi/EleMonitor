@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Elephant Alert - Drive Mode with Route Selection</title>
+
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet/dist/leaflet.css"
+    crossorigin=""
+  />
+
+  <style>
+    body,
+    html {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: Arial, sans-serif;
+    }
+
+    #map {
+      height: 100vh;
+      width: 100%;
+      opacity: 0;
+      transition: opacity 1s ease-in;
+    }
+
+    #map.loaded {
+      opacity: 1;
+    }
+
+    #loading {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: #222;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      color: white;
+      font-size: 1.2rem;
+      z-index: 9999;
+      flex-direction: column;
+    }
+
+    .spinner {
+      border: 6px solid #f3f3f3;
+      border-top: 6px solid #3498db;
+      border-radius: 50%;
+      width: 60px;
+      height: 60px;
+      animation: spin 1s linear infinite;
+      margin-bottom: 15px;
+    }
+
+    #button-container {
+      position: fixed;
+      top: 15px;
+      left: 15px;
+      z-index: 10000;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    button {
+      padding: 10px 18px;
+      background-color: red;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 16px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+      transition: background-color 0.3s ease;
+    }
+
+    button:disabled {
+      background-color: #aa0000;
+      cursor: not-allowed;
+    }
+
+    #select-location-btn.active,
+    #drive-mode-btn.active {
+      background-color: #007bff;
+      color: white;
+      cursor: pointer;
+      box-shadow: 0 2px 10px rgba(0, 123, 255, 0.7);
+    }
+
+    /* New Drive Mode Setup Panel */
+    #drive-setup-panel {
+      position: fixed;
+      top: 15px;
+      right: 15px;
+      z-index: 10001;
+      background: white;
+      padding: 15px;
+      border-radius: 8px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.3);
+      font-family: Arial, sans-serif;
+      width: 280px;
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    #drive-setup-panel h3 {
+      margin: 0 0 10px 0;
+      font-size: 18px;
+      color: #007bff;
+    }
+
+    #drive-setup-panel p {
+      margin: 5px 0;
+      font-weight: bold;
+    }
+
+    #drive-setup-panel button {
+      background-color: #007bff;
+    }
+
+    #drive-setup-panel button:disabled {
+      background-color: #66a3ff;
+      cursor: not-allowed;
+    }
+
+    #drive-setup-panel .info {
+      font-size: 14px;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <div id="button-container">
+    <button id="live-location-btn">Live Location</button>
+    <button id="select-location-btn">Select Location</button>
+    <button id="drive-mode-btn">Drive Mode</button>
+  </div>
+
+  <div id="drive-setup-panel">
+    <h3>Drive Mode Setup</h3>
+    <p>1. Click on map to select <span id="current-point">Start Location</span></p>
+    <p>Start Location: <span id="start-location">Not selected</span></p>
+    <p>Destination: <span id="destination-location">Not selected</span></p>
+    <button id="start-drive-btn" disabled>Start Driving</button>
+    <button id="cancel-drive-setup-btn" style="background-color:#cc0000;">Cancel</button>
+    <p class="info">After starting, your live location will be tracked.</p>
+  </div>
+
+  <div id="loading">
+    <div class="spinner"></div>
+    <div>Loading map, please wait...</div>
+  </div>
+
+  <div id="map"></div>
+
+  <script
+    src="https://unpkg.com/leaflet/dist/leaflet.js"
+    crossorigin=""
+  ></script>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js";
+    import {
+      getDatabase,
+      ref,
+      push,
+      onValue,
+    } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBPM55I08UVYhUm8XwETLlukc0btlKLE6Q",
+      authDomain: "elephant-alert-68626.firebaseapp.com",
+      databaseURL: "https://elephant-alert-68626-default-rtdb.firebaseio.com",
+      projectId: "elephant-alert-68626",
+      storageBucket: "elephant-alert-68626.firebasestorage.app",
+      messagingSenderId: "669608211278",
+      appId: "1:669608211278:web:11882bbe5bc29910e5641f",
+      measurementId: "G-WFZGXHZHHP",
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    const southWest = L.latLng(5.8371, 79.6506);
+    const northEast = L.latLng(10.0919, 81.8807);
+    const sriLankaBounds = L.latLngBounds(southWest, northEast);
+
+    const map = L.map("map", {
+      maxBounds: sriLankaBounds,
+      maxBoundsViscosity: 1.0,
+      minZoom: 7,
+      maxZoom: 15,
+      attributionControl: false,
+    }).setView([7.8731, 80.7718], 8);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+    }).addTo(map);
+
+    const loadingDiv = document.getElementById("loading");
+    const liveLocationBtn = document.getElementById("live-location-btn");
+    const selectLocationBtn = document.getElementById("select-location-btn");
+    const driveModeBtn = document.getElementById("drive-mode-btn");
+
+    const driveSetupPanel = document.getElementById("drive-setup-panel");
+    const currentPointLabel = document.getElementById("current-point");
+    const startLocationSpan = document.getElementById("start-location");
+    const destinationLocationSpan = document.getElementById("destination-location");
+    const startDriveBtn = document.getElementById("start-drive-btn");
+    const cancelDriveSetupBtn = document.getElementById("cancel-drive-setup-btn");
+
+    const elephantIcon = L.divIcon({
+      html: `<div style="
+        background-color: red; 
+        color: white; 
+        font-size: 24px; 
+        width: 40px; 
+        height: 40px; 
+        text-align: center; 
+        border-radius: 50%; 
+        line-height: 40px;
+        box-shadow: 0 0 5px rgba(0,0,0,0.5);
+        ">
+          🐘
+        </div>`,
+      className: "",
+      iconSize: [40, 40],
+      iconAnchor: [20, 40],
+      popupAnchor: [0, -40],
+    });
+
+    const driverIcon = L.divIcon({
+      html: `<div style="
+        background-color: crimson;
+        opacity: 0.8;
+        border: 2px solid white;
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        box-shadow: 0 0 10px crimson;
+      "></div>`,
+      className: "",
+      iconSize: [30, 30],
+      iconAnchor: [15, 15],
+    });
+
+    let selectLocationMode = false;
+    let driveMode = false;
+    let watchId = null;
+    let driverMarker = null;
+    let elephantMarkers = []; // Array of {data, marker}
+
+    // Drive Mode route setup variables
+    let isSelectingStart = true;
+    let startLocation = null;
+    let destinationLocation = null;
+    let startMarker = null;
+    let destinationMarker = null;
+
+    function isInsideSriLanka(lat, lng) {
+      return sriLankaBounds.contains([lat, lng]);
+    }
+
+    function deg2rad(deg) {
+      return deg * (Math.PI / 180);
+    }
+
+    // Haversine formula to calculate distance between two points in KM
+    function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
+      const R = 6371; // Earth radius in km
+      const dLat = deg2rad(lat2 - lat1);
+      const dLon = deg2rad(lon2 - lon1);
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(deg2rad(lat1)) *
+          Math.cos(deg2rad(lat2)) *
+          Math.sin(dLon / 2) *
+          Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
+
+    function disableSelectLocationMode() {
+      selectLocationMode = false;
+      selectLocationBtn.classList.remove("active");
+      selectLocationBtn.textContent = "Select Location";
+      liveLocationBtn.disabled = false;
+      driveModeBtn.disabled = false;
+      map.getContainer().style.cursor = "";
+      map.off("click", onMapClick);
+    }
+
+    function enableSelectLocationMode() {
+      selectLocationMode = true;
+      selectLocationBtn.classList.add("active");
+      selectLocationBtn.textContent = "Click on Map to Select Location";
+      liveLocationBtn.disabled = true;
+      driveModeBtn.disabled = true;
+      map.getContainer().style.cursor = "crosshair";
+      map.on("click", onMapClick);
+    }
+
+    function onMapClick(e) {
+      const { lat, lng } = e.latlng;
+
+      if (!isInsideSriLanka(lat, lng)) {
+        alert("Selected location is outside Sri Lanka. Please select inside Sri Lanka.");
+        return;
+      }
+
+      push(ref(db, "elephants"), {
+        latitude: lat,
+        longitude: lng,
+        timestamp: Date.now(),
+      });
+
+      alert("Elephant location tagged at selected position!");
+      disableSelectLocationMode();
+    }
+
+    liveLocationBtn.addEventListener("click", () => {
+      if (selectLocationMode) disableSelectLocationMode();
+      if (driveMode) {
+        alert("Turn off Drive Mode before using Live Location.");
+        return;
+      }
+
+      if (!navigator.geolocation) {
+        alert("Geolocation is not supported by your browser.");
+        return;
+      }
+
+      liveLocationBtn.disabled = true;
+      liveLocationBtn.textContent = "Getting Location...";
+
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const lat = position.coords.latitude;
+          const lng = position.coords.longitude;
+
+          if (!isInsideSriLanka(lat, lng)) {
+            alert("Your location is outside Sri Lanka. Cannot tag elephant here.");
+            liveLocationBtn.disabled = false;
+            liveLocationBtn.textContent = "Live Location";
+            return;
+          }
+
+          push(ref(db, "elephants"), {
+            latitude: lat,
+            longitude: lng,
+            timestamp: Date.now(),
+          });
+
+          alert("Elephant location tagged at your current position!");
+
+          liveLocationBtn.disabled = false;
+          liveLocationBtn.textContent = "Live Location";
+        },
+        (error) => {
+          alert("Unable to retrieve your location: " + error.message);
+          liveLocationBtn.disabled = false;
+          liveLocationBtn.textContent = "Live Location";
+        }
+      );
+    });
+
+    // DRIVE MODE WITH ROUTE SETUP
+
+    // Clear route selection markers
+    function clearRouteMarkers() {
+      if (startMarker) {
+        map.removeLayer(startMarker);
+        startMarker = null;
+      }
+      if (destinationMarker) {
+        map.removeLayer(destinationMarker);
+        destinationMarker = null;
+      }
+      startLocation = null;
+      destinationLocation = null;
+      startLocationSpan.textContent = "Not selected";
+      destinationLocationSpan.textContent = "Not selected";
+      isSelectingStart = true;
+      currentPointLabel.textContent = "Start Location";
+      startDriveBtn.disabled = true;
+    }
+
+    // Start tracking live driver location
+    function startDriveTracking() {
+      if (!startLocation || !destinationLocation) {
+        alert("Please select both Start Location and Destination.");
+        return;
+      }
+
+      driveMode = true;
+      driveModeBtn.classList.add("active");
+      driveModeBtn.textContent = "Drive Mode ON";
+
+      liveLocationBtn.disabled = true;
+      selectLocationBtn.disabled = true;
+
+      driveSetupPanel.style.display = "none";
+
+      map.getContainer().style.cursor = "progress";
+
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+
+      watchId = navigator.geolocation.watchPosition(
+        (position) => {
+          const lat = position.coords.latitude;
+          const lng = position.coords.longitude;
+
+          if (!isInsideSriLanka(lat, lng)) {
+            console.warn("Driver location outside Sri Lanka bounds.");
+            return;
+          }
+
+          if (!driverMarker) {
+            driverMarker = L.marker([lat, lng], { icon: driverIcon }).addTo(map);
+            map.setView([lat, lng], 14);
+          } else {
+            driverMarker.setLatLng([lat, lng]);
+          }
+
+          // Check for elephants within 5 km radius
+          elephantMarkers.forEach(({ data, marker }) => {
+            const dist = getDistanceFromLatLonInKm(
+              lat,
+              lng,
+              data.latitude,
+              data.longitude
+            );
+            if (dist <= 5) {
+              marker.openPopup();
+            } else {
+              marker.closePopup();
+            }
+          });
+        },
+        (error) => {
+          alert("Drive mode GPS error: " + error.message);
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 10000,
+          timeout: 10000,
+        }
+      );
+    }
+
+    driveModeBtn.addEventListener("click", () => {
+      if (driveMode) {
+        // Turn off Drive Mode
+        driveMode = false;
+        driveModeBtn.classList.remove("active");
+        driveModeBtn.textContent = "Drive Mode";
+
+        liveLocationBtn.disabled = false;
+        selectLocationBtn.disabled = false;
+
+        map.getContainer().style.cursor = "";
+
+        if (watchId !== null) {
+          navigator.geolocation.clearWatch(watchId);
+          watchId = null;
+        }
+
+        if (driverMarker) {
+          map.removeLayer(driverMarker);
+          driverMarker = null;
+        }
+      } else {
+        // Show setup panel for route selection
+        driveSetupPanel.style.display = "flex";
+        clearRouteMarkers();
+
+        liveLocationBtn.disabled = true;
+        selectLocationBtn.disabled = true;
+        driveModeBtn.disabled = true;
+
+        // Enable map click for selecting start/destination
+        map.getContainer().style.cursor = "crosshair";
+        map.on("click", onDriveMapClick);
+      }
+    });
+
+    // Cancel drive setup
+    cancelDriveSetupBtn.addEventListener("click", () => {
+      driveSetupPanel.style.display = "none";
+      driveModeBtn.disabled = false;
+      liveLocationBtn.disabled = false;
+      selectLocationBtn.disabled = false;
+
+      map.getContainer().style.cursor = "";
+      map.off("click", onDriveMapClick);
+      clearRouteMarkers();
+    });
+
+    // Handle clicks during drive setup to select start and destination
+    function onDriveMapClick(e) {
+      const { lat, lng } = e.latlng;
+
+      if (!isInsideSriLanka(lat, lng)) {
+        alert("Selected location is outside Sri Lanka. Please select inside Sri Lanka.");
+        return;
+      }
+
+      if (isSelectingStart) {
+        startLocation = { lat, lng };
+        startLocationSpan.textContent = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+
+        if (startMarker) {
+          map.removeLayer(startMarker);
+        }
+        startMarker = L.marker([lat, lng], { title: "Start Location" }).addTo(map);
+
+        isSelectingStart = false;
+        currentPointLabel.textContent = "Destination";
+      } else {
+        destinationLocation = { lat, lng };
+        destinationLocationSpan.textContent = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+
+        if (destinationMarker) {
+          map.removeLayer(destinationMarker);
+        }
+        destinationMarker = L.marker([lat, lng], { title: "Destination" }).addTo(map);
+
+        // Done selecting points - enable start button
+        startDriveBtn.disabled = false;
+
+        // Remove map click listener to avoid more points
+        map.off("click", onDriveMapClick);
+        map.getContainer().style.cursor = "";
+      }
+    }
+
+    startDriveBtn.addEventListener("click", () => {
+      startDriveTracking();
+
+      // Enable the driveModeBtn and disable drive setup buttons properly
+      driveModeBtn.disabled = false;
+      liveLocationBtn.disabled = true;
+      selectLocationBtn.disabled = true;
+    });
+
+    // Firebase elephant markers update
+    onValue(ref(db, "elephants"), (snapshot) => {
+      // Remove old markers
+      elephantMarkers.forEach(({ marker }) => {
+        map.removeLayer(marker);
+      });
+      elephantMarkers = [];
+
+      const data = snapshot.val();
+      if (data) {
+        Object.values(data).forEach((elephant) => {
+          if (isInsideSriLanka(elephant.latitude, elephant.longitude)) {
+            const marker = L.marker([elephant.latitude, elephant.longitude], {
+              icon: elephantIcon,
+            }).addTo(map);
+            marker.bindPopup("🐘 Elephant reported here");
+
+            elephantMarkers.push({ data: elephant, marker });
+          }
+        });
+      }
+
+      loadingDiv.style.display = "none";
+      document.getElementById("map").classList.add("loaded");
+    });
+
+  </script>
+</body>
+</html>
